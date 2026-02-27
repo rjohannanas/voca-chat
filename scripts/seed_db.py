@@ -1,20 +1,32 @@
 import boto3
 import psycopg2
 import json
+import toml
+import os
 from pgvector.psycopg2 import register_vector
 
-# 1. Configuración
-DB_CONFIG = {
-    "host": "chatbot-vocacional-instancia.cfk4w0y8ucoe.us-east-2.rds.amazonaws.com",
-    "database": "chatbot_db",
-    "user": "postgres",
-    "password": "crocodilo1"
-}
+# --- 1. CARGA SEGURA DE CONFIGURACIÓN ---
+try:
+    # Localizamos el archivo de secretos subiendo un nivel desde /scripts
+    ruta_secrets = os.path.join(os.path.dirname(__file__), '../.streamlit/secrets.toml')
+    secrets = toml.load(ruta_secrets)
+    
+    # Extraemos configuraciones
+    DB_CONFIG = secrets["connections"]["postgresql"]
+    AWS_KEYS = secrets["aws"]
+except Exception as e:
+    print(f"❌ Error al cargar secrets.toml: {e}")
+    exit()
 
-# Cliente de Bedrock
-bedrock = boto3.client(service_name='bedrock-runtime', region_name='us-east-2')
+# --- 2. INICIALIZACIÓN DE CLIENTES ---
+bedrock = boto3.client(
+    service_name='bedrock-runtime', 
+    region_name=AWS_KEYS["region"],
+    aws_access_key_id=AWS_KEYS["aws_access_key_id"],
+    aws_secret_access_key=AWS_KEYS["aws_secret_access_key"]
+)
 
-# 2. Datos de prueba (El corazón de tu idea)
+# Datos de prueba (El corazón de tu idea)
 actividades = [
     {"txt": "Analizar por qué la gente elige un producto sobre otro usando datos", "dim": {"analitico": 0.9}, "env": "Marketing/Data"},
     {"txt": "Coordinar equipos para resolver un problema urgente en una ciudad", "dim": {"liderazgo": 0.8}, "env": "Social/Gov"},
@@ -32,13 +44,16 @@ def generar_vector(texto):
     )
     return json.loads(response.get('body').read())['embedding']
 
+# --- 3. LÓGICA DE CARGA ---
 try:
+    # Conexión usando desempaquetado de diccionario
     conn = psycopg2.connect(**DB_CONFIG)
     register_vector(conn)
     cur = conn.cursor()
 
     print("🚀 Empezando la carga de actividades...")
     for act in actividades:
+        print(f"Generando vector para: {act['txt'][:30]}...")
         vector = generar_vector(act['txt'])
         cur.execute(
             "INSERT INTO actividades (descripcion, dimensiones, embedding) VALUES (%s, %s, %s)",

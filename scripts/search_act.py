@@ -1,17 +1,30 @@
 import boto3
 import psycopg2
 import json
+import toml
+import os
 from pgvector.psycopg2 import register_vector
 
-# 1. Configuración
-DB_CONFIG = {
-    "host": "chatbot-vocacional-instancia.cfk4w0y8ucoe.us-east-2.rds.amazonaws.com",
-    "database": "chatbot_db",
-    "user": "postgres",
-    "password": "crocodilo1"
-}
+# --- 1. CARGA SEGURA DE CONFIGURACIÓN ---
+try:
+    # Localizamos el archivo de secretos subiendo un nivel desde /scripts
+    ruta_secrets = os.path.join(os.path.dirname(__file__), '../.streamlit/secrets.toml')
+    secrets = toml.load(ruta_secrets)
+    
+    # Extraemos configuraciones
+    DB_CONFIG = secrets["connections"]["postgresql"]
+    AWS_KEYS = secrets["aws"]
+except Exception as e:
+    print(f"❌ Error al cargar secrets.toml: {e}")
+    exit()
 
-bedrock = boto3.client(service_name='bedrock-runtime', region_name='us-east-2')
+# --- 2. INICIALIZACIÓN DE CLIENTES ---
+bedrock = boto3.client(
+    service_name='bedrock-runtime', 
+    region_name=AWS_KEYS["region"],
+    aws_access_key_id=AWS_KEYS["aws_access_key_id"],
+    aws_secret_access_key=AWS_KEYS["aws_secret_access_key"]
+)
 
 def obtener_embedding(texto):
     body = json.dumps({"inputText": texto})
@@ -25,14 +38,14 @@ def obtener_embedding(texto):
 
 def generar_respuesta_ia(interes_usuario, actividad_encontrada):
     prompt = f"""
-    Eres un orientador vocacional humano, empático y curioso. 
+    Eres un orientador vocacional humano, empático y curioso de la UNI. 
     El usuario dice que le apasiona: "{interes_usuario}"
-    En nuestra base de datos, lo más cercano que tenemos es: "{actividad_encontrada}"
+    En nuestra base de datos, lo más cercano es: "{actividad_encontrada}"
     
     NO des una conclusión profesional todavía. En su lugar:
     1. Valida su interés con calidez.
-    2. Haz una conexión muy sutil o metafórica con la actividad encontrada.
-    3. Termina con una PREGUNTA abierta para conocer más al usuario.
+    2. Haz una conexión muy sutil con la actividad encontrada.
+    3. Termina con una PREGUNTA abierta.
     
     Respuesta corta (máximo 3 oraciones).
     """
@@ -50,11 +63,11 @@ def generar_respuesta_ia(interes_usuario, actividad_encontrada):
     result = json.loads(response.get('body').read())
     return result['content'][0]['text']
 
-# --- FLUJO PRINCIPAL ---
+# --- 3. FLUJO PRINCIPAL ---
 print("✨ ¡Hola! Soy Voca-Chat. Cuéntame sobre tus hobbies o lo que te gusta hacer...")
 
 try:
-    # Conectar a la DB una sola vez fuera del bucle para ser más eficientes
+    # Conexión usando desempaquetado de diccionario
     conn = psycopg2.connect(**DB_CONFIG)
     register_vector(conn)
     cur = conn.cursor()
@@ -67,20 +80,17 @@ try:
             break
 
         try:
-            # 1. Convertir entrada a vector
             vector_usuario = obtener_embedding(pregunta_usuario)
             
-            # 2. Buscar en PostgreSQL (Búsqueda semántica)
+            # Búsqueda semántica usando el operador de distancia de pgvector
             cur.execute(
                 "SELECT descripcion FROM actividades ORDER BY embedding <=> %s::vector LIMIT 1",
                 (vector_usuario,)
             )
             resultado_db = cur.fetchone()[0]
 
-            # 3. Generar respuesta con Claude
             print("\n🔍 Analizando tu perfil...")
             respuesta_final = generar_respuesta_ia(pregunta_usuario, resultado_db)
-            
             print(f"\n💡 Orientador IA: {respuesta_final}")
 
         except Exception as e:
